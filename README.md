@@ -43,6 +43,16 @@ sudo apt install xclip
 sudo apt install xsel
 ```
 
+## Customization
+
+The export appearance can be customized via **Options > Export Settings**:
+
+- **Font Sizes** - Title, header, body, and summary text sizes
+- **Column Widths** - Adjust width of each column (Proyecto/Area, Avance, Impacto, Estado)
+- **Spacing** - Cell padding and row height settings
+
+Changes are previewed in real-time and saved automatically.
+
 ## Build Executable
 
 ```bash
@@ -55,6 +65,19 @@ Your .exe will be in the `dist/` folder.
 ## Data Storage
 
 Activities are saved locally in `~/.logbook/` as JSON files (one file per day).
+Settings are persisted to `~/.logbook/image_settings.json`.
+
+## Project Structure
+
+The application uses a modular design with separated concerns:
+
+- **gui.py** - Main application UI and orchestration
+- **settings_manager.py** - Manages export settings persistence
+- **image_exporter.py** - Handles image generation and clipboard operations
+- **text_wrapper.py** - Text wrapping utilities (UI and image rendering)
+- **dialog_manager.py** - Manages settings dialog and export preview
+- **storage.py** - Data persistence layer for activities
+- **main.py** - Entry point
 
 ## Requirements
 
