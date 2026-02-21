@@ -73,3 +73,4 @@ class SettingsManager:
             "min_row_height": 60,
             "padding": 20
         }
+        return self.settings
