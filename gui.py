@@ -1,9 +1,11 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from datetime import datetime, timedelta
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 import subprocess
 import platform
+import json
+from pathlib import Path
 
 try:
     from tkcalendar import Calendar
@@ -29,12 +31,353 @@ class DailyLogbookUI:
         self.root.geometry("800x700")
         self.root.resizable(True, True)       
         self.today = datetime.now().strftime("%Y-%m-%d")
-        self.selected_date = self.today       
+        self.selected_date = self.today
+        
+        # Image export settings
+        self.image_settings = self._load_image_settings()
+        
         self.setup_ui()
         self.load_activities()
     
+    def _get_settings_file(self):
+        """Get the path to the settings file"""
+        settings_dir = Path.home() / ".logbook"
+        settings_dir.mkdir(exist_ok=True)
+        return settings_dir / "image_settings.json"
+    
+    def _load_image_settings(self):
+        """Load image export settings from file"""
+        settings_file = self._get_settings_file()
+        default_settings = {
+            "title_font_size": 24,
+            "header_font_size": 18,
+            "body_font_size": 16,
+            "summary_font_size": 14,
+            "column_widths": [320, 280, 250, 160],
+            "cell_padding": 15,
+            "min_row_height": 60,
+            "padding": 20
+        }
+        
+        if settings_file.exists():
+            try:
+                with open(settings_file, 'r') as f:
+                    loaded = json.load(f)
+                    default_settings.update(loaded)
+            except:
+                pass
+        
+        return default_settings
+    
+    def _save_image_settings(self):
+        """Save image export settings to file"""
+        settings_file = self._get_settings_file()
+        try:
+            with open(settings_file, 'w') as f:
+                json.dump(self.image_settings, f, indent=2)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save settings: {e}")
+    
+    def _generate_preview_image(self, settings_dict, activities=None):
+        """Generate a preview image with given settings and optional activities"""
+        padding = settings_dict["padding"]
+        cell_padding = settings_dict["cell_padding"]
+        min_row_height = settings_dict["min_row_height"]
+        col_widths = settings_dict["column_widths"]
+        
+        header_bg = (44, 62, 80)
+        header_fg = (255, 255, 255)
+        row_bg = (255, 255, 255)
+        border_color = (220, 220, 220)
+        text_color = (51, 51, 51)
+        title_color = (51, 51, 51)
+        
+        try:
+            title_font = ImageFont.truetype("arial.ttf", settings_dict["title_font_size"])
+            header_font = ImageFont.truetype("arial.ttf", settings_dict["header_font_size"])
+            body_font = ImageFont.truetype("arial.ttf", settings_dict["body_font_size"])
+        except:
+            title_font = header_font = body_font = ImageFont.load_default()
+        
+        # Use actual activities if provided, otherwise use sample data
+        if activities is None:
+            activities = [
+                {"proyecto_area": "Website Redesign", "avance": "60% Complete", "impacto": "High Priority", "estado": "en progreso"},
+                {"proyecto_area": "Database Migration", "avance": "Testing Phase", "impacto": "Critical", "estado": "en progreso"},
+            ]
+        else:
+            # Limit to first 10 activities for preview
+            activities = activities[:10]
+        
+        temp_img = Image.new("RGB", (1, 1))
+        temp_draw = ImageDraw.Draw(temp_img)
+        line_height = self._get_line_height(temp_draw, body_font)
+        
+        # Calculate row heights with text wrapping
+        row_heights = []
+        wrapped_content = []
+        
+        for activity in activities:
+            proyecto_lines = self._wrap_text_for_image(activity.get("proyecto_area", ""), None, col_widths[0], temp_draw, body_font)
+            avance_lines = self._wrap_text_for_image(activity.get("avance", ""), None, col_widths[1], temp_draw, body_font)
+            impacto_lines = self._wrap_text_for_image(activity.get("impacto", ""), None, col_widths[2], temp_draw, body_font)
+            estado_lines = [activity.get("estado", "pendiente")]
+            
+            max_lines = max(len(proyecto_lines), len(avance_lines), len(impacto_lines), len(estado_lines))
+            row_height = max(min_row_height, (max_lines * line_height) + (cell_padding * 2))
+            
+            row_heights.append(row_height)
+            wrapped_content.append({
+                'proyecto': proyecto_lines,
+                'avance': avance_lines,
+                'impacto': impacto_lines,
+                'estado': estado_lines
+            })
+        
+        # Calculate dimensions
+        title_height = 60
+        header_height = 50
+        content_height = sum(row_heights)
+        summary_height = 40
+        total_height = title_height + header_height + content_height + summary_height + (padding * 2)
+        total_width = sum(col_widths) + (padding * 2) + 2
+        
+        # Create image
+        img = Image.new("RGB", (total_width, total_height), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        
+        y = padding
+        
+        # Draw title
+        draw.text((padding + 10, y), "Daily Logbook - Preview", fill=title_color, font=title_font)
+        y += title_height
+        
+        # Draw header
+        x = padding
+        headers = ["Proyecto/Area", "Avance", "Impacto", "Estado"]
+        draw.rectangle(
+            [(padding, y), (total_width - padding, y + header_height)],
+            fill=header_bg, outline=border_color
+        )
+        
+        for i, header in enumerate(headers):
+            draw.text((x + cell_padding, y + cell_padding), header, fill=header_fg, font=header_font)
+            x += col_widths[i]
+        
+        y += header_height
+        
+        # Draw data rows
+        for idx, activity in enumerate(activities):
+            row_height = row_heights[idx]
+            bg_color = row_bg
+            draw.rectangle(
+                [(padding, y), (total_width - padding, y + row_height)],
+                fill=bg_color, outline=border_color
+            )
+            
+            content = wrapped_content[idx]
+            x = padding
+            
+            # Draw each cell with wrapped text
+            for col_idx, (lines, col_width) in enumerate(zip(
+                [content['proyecto'], content['avance'], content['impacto'], content['estado']],
+                col_widths
+            )):
+                text_y = y + cell_padding
+                for line in lines:
+                    draw.text((x + cell_padding, text_y), line, fill=text_color, font=body_font)
+                    text_y += line_height
+                
+                x += col_width
+            
+            y += row_height
+        
+        # Resize for display (max 800x600 for dialog)
+        max_width = 800
+        max_height = 600
+        if total_width > max_width or total_height > max_height:
+            scale = min(max_width / total_width, max_height / total_height)
+            new_size = (int(total_width * scale), int(total_height * scale))
+            img = img.resize(new_size, Image.Resampling.LANCZOS)
+        
+        return img
+    
+    def show_options(self):
+        """Show the options/settings dialog"""
+        # Load actual activities for preview
+        try:
+            actual_activities = self.storage.load_activities(self.selected_date)
+        except:
+            actual_activities = []
+        
+        options_window = tk.Toplevel(self.root)
+        options_window.title("Export Settings")
+        options_window.geometry("900x700")
+        options_window.transient(self.root)
+        options_window.grab_set()
+        
+        # Create main horizontal layout
+        main_container = ttk.Frame(options_window)
+        main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Left side with notebook
+        left_frame = ttk.Frame(main_container)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Create notebook for tabs
+        notebook = ttk.Notebook(left_frame)
+        notebook.pack(fill=tk.BOTH, expand=True)
+        
+        # Font sizes tab
+        font_frame = ttk.Frame(notebook, padding=15)
+        notebook.add(font_frame, text="Font Sizes")
+        
+        ttk.Label(font_frame, text="Title Font Size:", font=("Arial", 10)).grid(row=0, column=0, sticky=tk.W, pady=5)
+        title_var = tk.IntVar(value=self.image_settings["title_font_size"])
+        ttk.Spinbox(font_frame, from_=8, to=48, textvariable=title_var, width=10).grid(row=0, column=1, sticky=tk.W, padx=10)
+        
+        ttk.Label(font_frame, text="Header Font Size:", font=("Arial", 10)).grid(row=1, column=0, sticky=tk.W, pady=5)
+        header_var = tk.IntVar(value=self.image_settings["header_font_size"])
+        ttk.Spinbox(font_frame, from_=8, to=48, textvariable=header_var, width=10).grid(row=1, column=1, sticky=tk.W, padx=10)
+        
+        ttk.Label(font_frame, text="Body Font Size:", font=("Arial", 10)).grid(row=2, column=0, sticky=tk.W, pady=5)
+        body_var = tk.IntVar(value=self.image_settings["body_font_size"])
+        ttk.Spinbox(font_frame, from_=8, to=48, textvariable=body_var, width=10).grid(row=2, column=1, sticky=tk.W, padx=10)
+        
+        ttk.Label(font_frame, text="Summary Font Size:", font=("Arial", 10)).grid(row=3, column=0, sticky=tk.W, pady=5)
+        summary_var = tk.IntVar(value=self.image_settings["summary_font_size"])
+        ttk.Spinbox(font_frame, from_=8, to=48, textvariable=summary_var, width=10).grid(row=3, column=1, sticky=tk.W, padx=10)
+        
+        # Column widths tab
+        col_frame = ttk.Frame(notebook, padding=15)
+        notebook.add(col_frame, text="Column Widths")
+        
+        col_vars = []
+        columns = ["Proyecto/Area", "Avance", "Impacto", "Estado"]
+        for i, col_name in enumerate(columns):
+            ttk.Label(col_frame, text=f"{col_name} Width:", font=("Arial", 10)).grid(row=i, column=0, sticky=tk.W, pady=5)
+            col_var = tk.IntVar(value=self.image_settings["column_widths"][i])
+            col_vars.append(col_var)
+            ttk.Spinbox(col_frame, from_=50, to=500, textvariable=col_var, width=10).grid(row=i, column=1, sticky=tk.W, padx=10)
+        
+        # Spacing tab
+        space_frame = ttk.Frame(notebook, padding=15)
+        notebook.add(space_frame, text="Spacing")
+        
+        ttk.Label(space_frame, text="Cell Padding:", font=("Arial", 10)).grid(row=0, column=0, sticky=tk.W, pady=5)
+        padding_var = tk.IntVar(value=self.image_settings["cell_padding"])
+        ttk.Spinbox(space_frame, from_=5, to=30, textvariable=padding_var, width=10).grid(row=0, column=1, sticky=tk.W, padx=10)
+        
+        ttk.Label(space_frame, text="Minimum Row Height:", font=("Arial", 10)).grid(row=1, column=0, sticky=tk.W, pady=5)
+        row_height_var = tk.IntVar(value=self.image_settings["min_row_height"])
+        ttk.Spinbox(space_frame, from_=30, to=150, textvariable=row_height_var, width=10).grid(row=1, column=1, sticky=tk.W, padx=10)
+        
+        ttk.Label(space_frame, text="Padding (Overall):", font=("Arial", 10)).grid(row=2, column=0, sticky=tk.W, pady=5)
+        overall_padding_var = tk.IntVar(value=self.image_settings["padding"])
+        ttk.Spinbox(space_frame, from_=5, to=50, textvariable=overall_padding_var, width=10).grid(row=2, column=1, sticky=tk.W, padx=10)
+        
+        # Right side with preview
+        preview_frame = ttk.LabelFrame(main_container, text="Preview", padding=10)
+        preview_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(10, 0))
+        
+        preview_label = ttk.Label(preview_frame)
+        preview_label.pack(fill=tk.BOTH, expand=True)
+        
+        def update_preview(*args):
+            """Update the preview with current settings"""
+            preview_settings = {
+                "title_font_size": title_var.get(),
+                "header_font_size": header_var.get(),
+                "body_font_size": body_var.get(),
+                "summary_font_size": summary_var.get(),
+                "column_widths": [cv.get() for cv in col_vars],
+                "cell_padding": padding_var.get(),
+                "min_row_height": row_height_var.get(),
+                "padding": overall_padding_var.get()
+            }
+            
+            try:
+                preview_img = self._generate_preview_image(preview_settings, actual_activities if actual_activities else None)
+                photo = ImageTk.PhotoImage(preview_img)
+                preview_label.config(image=photo)
+                preview_label.image = photo
+            except Exception as e:
+                preview_label.config(text=f"Preview Error: {str(e)}")
+        
+        # Bind all variables to update preview instantly
+        title_var.trace("w", update_preview)
+        header_var.trace("w", update_preview)
+        body_var.trace("w", update_preview)
+        summary_var.trace("w", update_preview)
+        padding_var.trace("w", update_preview)
+        row_height_var.trace("w", update_preview)
+        overall_padding_var.trace("w", update_preview)
+        for cv in col_vars:
+            cv.trace("w", update_preview)
+        
+        # Initial preview
+        update_preview()
+        
+        # Buttons
+        button_frame = ttk.Frame(options_window)
+        button_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        def save_settings():
+            self.image_settings["title_font_size"] = title_var.get()
+            self.image_settings["header_font_size"] = header_var.get()
+            self.image_settings["body_font_size"] = body_var.get()
+            self.image_settings["summary_font_size"] = summary_var.get()
+            self.image_settings["column_widths"] = [cv.get() for cv in col_vars]
+            self.image_settings["cell_padding"] = padding_var.get()
+            self.image_settings["min_row_height"] = row_height_var.get()
+            self.image_settings["padding"] = overall_padding_var.get()
+            
+            self._save_image_settings()
+            messagebox.showinfo("Success", "Settings saved successfully!")
+            options_window.destroy()
+        
+        def reset_defaults():
+            defaults = {
+                "title_font_size": 24,
+                "header_font_size": 18,
+                "body_font_size": 16,
+                "summary_font_size": 14,
+                "column_widths": [320, 280, 250, 160],
+                "cell_padding": 15,
+                "min_row_height": 60,
+                "padding": 20
+            }
+            title_var.set(defaults["title_font_size"])
+            header_var.set(defaults["header_font_size"])
+            body_var.set(defaults["body_font_size"])
+            summary_var.set(defaults["summary_font_size"])
+            for i, cv in enumerate(col_vars):
+                cv.set(defaults["column_widths"][i])
+            padding_var.set(defaults["cell_padding"])
+            row_height_var.set(defaults["min_row_height"])
+            overall_padding_var.set(defaults["padding"])
+            update_preview()
+        
+        ttk.Button(button_frame, text="Save", command=save_settings).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Reset to Defaults", command=reset_defaults).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Cancel", command=options_window.destroy).pack(side=tk.LEFT, padx=5)
+    
     def setup_ui(self):
         """Create all UI components"""
+        # Create menu bar
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+        
+        # File menu
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="Exit", command=self.root.quit)
+        
+        # Options menu
+        options_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Options", menu=options_menu)
+        options_menu.add_command(label="Export Settings", command=self.show_options)
+        
         main_frame = ttk.Frame(self.root)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
@@ -296,12 +639,16 @@ class DailyLogbookUI:
         columns = ("Proyecto/Area", "Avance", "Impacto", "Estado", "Actions")
         self.tree = ttk.Treeview(list_frame, columns=columns, height=12, show="tree headings")
         
+        # Configure style for text wrapping
+        style = ttk.Style()
+        style.configure('Treeview', rowheight=60)  # Increase row height to allow wrapped text
+        
         self.tree.column("#0", width=0, stretch=False)
-        self.tree.column("Proyecto/Area", anchor=tk.W, width=150)
-        self.tree.column("Avance", anchor=tk.W, width=100)
-        self.tree.column("Impacto", anchor=tk.W, width=100)
-        self.tree.column("Estado", anchor=tk.CENTER, width=130)
-        self.tree.column("Actions", anchor=tk.CENTER, width=80)
+        self.tree.column("Proyecto/Area", anchor=tk.NW, width=100, stretch=True)  # Changed to NW for top-left alignment
+        self.tree.column("Avance", anchor=tk.NW, width=300, stretch=True)  # Changed to NW for top-left alignment
+        self.tree.column("Impacto", anchor=tk.NW, width=300, stretch=True)  # Changed to NW for top-left alignment
+        self.tree.column("Estado", anchor=tk.CENTER, width=100, stretch=True)
+        self.tree.column("Actions", anchor=tk.CENTER, width=80, stretch=False)
         
         self.tree.heading("Proyecto/Area", text="Proyecto/Area")
         self.tree.heading("Avance", text="Avance")
@@ -385,6 +732,34 @@ class DailyLogbookUI:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to add activity: {e}")
     
+    def _wrap_text(self, text, max_width=30):
+        """Wrap text to fit within column width"""
+        if not text:
+            return text
+        
+        # Split text into lines if it contains newlines already
+        lines = text.split('\n')
+        wrapped_lines = []
+        
+        for line in lines:
+            if len(line) <= max_width:
+                wrapped_lines.append(line)
+            else:
+                # Break long lines into multiple shorter lines
+                words = line.split()
+                current_line = ""
+                for word in words:
+                    if len(current_line) + len(word) + 1 <= max_width:
+                        current_line += word + " "
+                    else:
+                        if current_line:
+                            wrapped_lines.append(current_line.strip())
+                        current_line = word + " "
+                if current_line:
+                    wrapped_lines.append(current_line.strip())
+        
+        return "\n".join(wrapped_lines)
+    
     def load_activities(self):
         """Display activities in the tree"""
         for item in self.tree.get_children():
@@ -402,9 +777,9 @@ class DailyLogbookUI:
             return
         
         for activity in activities:
-            proyecto = activity.get("proyecto_area", "")
-            avance = activity.get("avance", "")
-            impacto = activity.get("impacto", "")
+            proyecto = self._wrap_text(activity.get("proyecto_area", ""), max_width=10)
+            avance = self._wrap_text(activity.get("avance", ""), max_width=100)
+            impacto = self._wrap_text(activity.get("impacto", ""), max_width=100)
             estado = activity.get("estado", "pendiente")
             self.tree.insert("", tk.END, values=(proyecto, avance, impacto, estado, "✎ ✕"))
         
@@ -547,10 +922,42 @@ class DailyLogbookUI:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to copy table: {e}")
     
+    def _wrap_text_for_image(self, text, max_char_width, col_width, draw, font):
+        """Wrap text to fit within a column width and return list of lines with their heights"""
+        if not text:
+            return []
+        
+        lines = []
+        words = text.split()
+        current_line = ""
+        
+        for word in words:
+            test_line = current_line + word + " "
+            bbox = draw.textbbox((0, 0), test_line, font=font)
+            line_width = bbox[2] - bbox[0]
+            
+            if line_width <= col_width - 20:  # Leave padding for cell margins
+                current_line = test_line
+            else:
+                if current_line:
+                    lines.append(current_line.strip())
+                current_line = word + " "
+        
+        if current_line:
+            lines.append(current_line.strip())
+        
+        return lines
+    
+    def _get_line_height(self, draw, font):
+        """Get the height of a single line of text"""
+        bbox = draw.textbbox((0, 0), "Agy", font=font)
+        return bbox[3] - bbox[1] + 5  # Add small spacing
+    
     def _create_table_image(self, date_str, activities):
-        padding = 20
-        cell_padding = 10
-        row_height = 35
+        # Get settings from self.image_settings
+        padding = self.image_settings["padding"]
+        cell_padding = self.image_settings["cell_padding"]
+        min_row_height = self.image_settings["min_row_height"]
         header_bg = (44, 62, 80)  
         header_fg = (255, 255, 255) 
         row_bg_odd = (255, 255, 255)
@@ -560,50 +967,46 @@ class DailyLogbookUI:
         title_color = (51, 51, 51)
         
         try:
-            title_font = ImageFont.truetype("arial.ttf", 16)
-            header_font = ImageFont.truetype("arial.ttf", 12)
-            body_font = ImageFont.truetype("arial.ttf", 11)
-            summary_font = ImageFont.truetype("arial.ttf", 10)
+            title_font = ImageFont.truetype("arial.ttf", self.image_settings["title_font_size"])
+            header_font = ImageFont.truetype("arial.ttf", self.image_settings["header_font_size"])
+            body_font = ImageFont.truetype("arial.ttf", self.image_settings["body_font_size"])
+            summary_font = ImageFont.truetype("arial.ttf", self.image_settings["summary_font_size"])
         except:
             title_font = header_font = body_font = summary_font = ImageFont.load_default()
         
         temp_img = Image.new("RGB", (1, 1))
         temp_draw = ImageDraw.Draw(temp_img)
-        headers = ["Proyecto/Area", "Avance", "Impacto", "Estado"]
         
-        col_widths = []
-        for header in headers:
-            bbox = temp_draw.textbbox((0, 0), header, font=header_font)
-            col_widths.append(bbox[2] - bbox[0] + cell_padding * 2)
+        # Set fixed reasonable column widths for wrapping
+        col_widths = self.image_settings["column_widths"]  # Use settings
+        
+        # Calculate actual row heights based on wrapped content
+        row_heights = []
+        wrapped_content = []
+        line_height = self._get_line_height(temp_draw, body_font)
         
         for activity in activities:
-            # Proyecto/Area column
-            bbox = temp_draw.textbbox((0, 0), activity.get("proyecto_area", ""), font=body_font)
-            width = bbox[2] - bbox[0] + cell_padding * 2
-            col_widths[0] = max(col_widths[0], width)
+            proyecto_lines = self._wrap_text_for_image(activity.get("proyecto_area", ""), 25, col_widths[0], temp_draw, body_font)
+            avance_lines = self._wrap_text_for_image(activity.get("avance", ""), 20, col_widths[1], temp_draw, body_font)
+            impacto_lines = self._wrap_text_for_image(activity.get("impacto", ""), 20, col_widths[2], temp_draw, body_font)
+            estado_lines = [activity.get("estado", "pendiente")]
             
-            # Avance
-            bbox = temp_draw.textbbox((0, 0), activity.get("avance", ""), font=body_font)
-            width = bbox[2] - bbox[0] + cell_padding * 2
-            col_widths[1] = max(col_widths[1], width)
+            max_lines = max(len(proyecto_lines), len(avance_lines), len(impacto_lines), len(estado_lines))
+            row_height = max(min_row_height, (max_lines * line_height) + (cell_padding * 2))
             
-            # Impacto
-            bbox = temp_draw.textbbox((0, 0), activity.get("impacto", ""), font=body_font)
-            width = bbox[2] - bbox[0] + cell_padding * 2
-            col_widths[2] = max(col_widths[2], width)
-            
-            # Estado
-            bbox = temp_draw.textbbox((0, 0), activity.get("estado", "pendiente"), font=body_font)
-            width = bbox[2] - bbox[0] + cell_padding * 2
-            col_widths[3] = max(col_widths[3], width)
-        
-        col_widths = [max(w, 80) for w in col_widths]
+            row_heights.append(row_height)
+            wrapped_content.append({
+                'proyecto': proyecto_lines,
+                'avance': avance_lines,
+                'impacto': impacto_lines,
+                'estado': estado_lines
+            })
         
         # Calculate dimensions
-        title_height = 60
-        header_height = row_height
-        content_height = row_height * len(activities)
-        summary_height = 50
+        title_height = 80
+        header_height = 70
+        content_height = sum(row_heights)
+        summary_height = 60
         total_height = title_height + header_height + content_height + summary_height + (padding * 2)
         total_width = sum(col_widths) + (padding * 2) + 2 
         
@@ -621,7 +1024,7 @@ class DailyLogbookUI:
         x = padding
         headers = ["Proyecto/Area", "Avance", "Impacto", "Estado"]
         draw.rectangle(
-            [(padding, y), (total_width - padding, y + row_height)],
+            [(padding, y), (total_width - padding, y + header_height)],
             fill=header_bg, outline=border_color
         )
         
@@ -629,34 +1032,30 @@ class DailyLogbookUI:
             draw.text((x + cell_padding, y + cell_padding), header, fill=header_fg, font=header_font)
             x += col_widths[i]
         
-        y += row_height
+        y += header_height
         
-        for idx, activity in enumerate(activities):
+        # Draw data rows
+        for idx, (activity, row_height) in enumerate(zip(activities, row_heights)):
             bg_color = row_bg_even if idx % 2 == 0 else row_bg_odd
             draw.rectangle(
                 [(padding, y), (total_width - padding, y + row_height)],
                 fill=bg_color, outline=border_color
             )
             
+            content = wrapped_content[idx]
             x = padding
-            # Proyecto/Area
-            proyecto = activity.get("proyecto_area", "")
-            draw.text((x + cell_padding, y + cell_padding), proyecto, fill=text_color, font=body_font)
-            x += col_widths[0]
             
-            # Avance
-            avance = activity.get("avance", "")
-            draw.text((x + cell_padding, y + cell_padding), avance, fill=text_color, font=body_font)
-            x += col_widths[1]
-            
-            # Impacto
-            impacto = activity.get("impacto", "")
-            draw.text((x + cell_padding, y + cell_padding), impacto, fill=text_color, font=body_font)
-            x += col_widths[2]
-            
-            # Estado
-            estado = activity.get("estado", "pendiente")
-            draw.text((x + cell_padding, y + cell_padding), estado, fill=text_color, font=body_font)
+            # Draw each cell with wrapped text
+            for col_idx, (lines, col_width) in enumerate(zip(
+                [content['proyecto'], content['avance'], content['impacto'], content['estado']],
+                col_widths
+            )):
+                text_y = y + cell_padding
+                for line in lines:
+                    draw.text((x + cell_padding, text_y), line, fill=text_color, font=body_font)
+                    text_y += line_height
+                
+                x += col_width
             
             y += row_height
         
